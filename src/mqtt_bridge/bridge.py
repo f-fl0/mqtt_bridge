@@ -9,7 +9,7 @@ from .util import lookup_object, extract_values, populate_instance
 
 
 def create_bridge(factory: Union[str, "Bridge"], msg_type: Union[str, Type[rospy.Message]], topic_from: str,
-                  topic_to: str, frequency: Optional[float] = None, **kwargs) -> "Bridge":
+                  topic_to: str, frequency: Optional[float] = None, qos: Optional[int] = 1, **kwargs) -> "Bridge":
     """ generate bridge instance using factory callable and arguments. if `factory` or `meg_type` is provided as string,
      this function will convert it to a corresponding object.
     """
@@ -24,7 +24,7 @@ def create_bridge(factory: Union[str, "Bridge"], msg_type: Union[str, Type[rospy
             "msg_type should be rospy.Message instance or its string"
             "reprensentation")
     return factory(
-        topic_from=topic_from, topic_to=topic_to, msg_type=msg_type, frequency=frequency, **kwargs)
+        topic_from=topic_from, topic_to=topic_to, msg_type=msg_type, frequency=frequency, qos=qos, **kwargs)
 
 
 class Bridge(object, metaclass=ABCMeta):
@@ -41,11 +41,13 @@ class RosToMqttBridge(Bridge):
     bridge ROS messages on `topic_from` to MQTT topic `topic_to`. expect `msg_type` ROS message type.
     """
 
-    def __init__(self, topic_from: str, topic_to: str, msg_type: rospy.Message, frequency: Optional[float] = None):
+    def __init__(self, topic_from: str, topic_to: str, msg_type: rospy.Message,
+                 frequency: Optional[float] = None, qos: Optional[int] = 1):
         self._topic_from = topic_from
         self._topic_to = self._extract_private_path(topic_to)
         self._last_published = rospy.get_time()
         self._interval = 0 if frequency is None else 1.0 / frequency
+        self._qos = qos if qos in [0, 1, 2] else 1
         rospy.Subscriber(topic_from, msg_type, self._callback_ros)
 
     def _callback_ros(self, msg: rospy.Message):
@@ -57,7 +59,7 @@ class RosToMqttBridge(Bridge):
 
     def _publish(self, msg: rospy.Message):
         payload = self._serialize(extract_values(msg))
-        self._mqtt_client.publish(topic=self._topic_to, payload=payload)
+        self._mqtt_client.publish(topic=self._topic_to, payload=payload, qos=self._qos)
 
 
 class MqttToRosBridge(Bridge):
@@ -67,15 +69,16 @@ class MqttToRosBridge(Bridge):
     """
 
     def __init__(self, topic_from: str, topic_to: str, msg_type: Type[rospy.Message],
-                 frequency: Optional[float] = None, queue_size: int = 10):
+                 frequency: Optional[float] = None, queue_size: int = 10, qos: Optional[int] = 1):
         self._topic_from = self._extract_private_path(topic_from)
         self._topic_to = topic_to
         self._msg_type = msg_type
-        self._queue_size = queue_size
-        self._last_published = rospy.get_time()
         self._interval = None if frequency is None else 1.0 / frequency
+        self._queue_size = queue_size
+        self._qos = qos if qos in [0, 1, 2] else 1
+        self._last_published = rospy.get_time()
         # Adding the correct topic to subscribe to
-        self._mqtt_client.subscribe(self._topic_from)
+        self._mqtt_client.subscribe(self._topic_from, qos=self._qos)
         self._mqtt_client.message_callback_add(self._topic_from, self._callback_mqtt)
         self._publisher = rospy.Publisher(
             self._topic_to, self._msg_type, queue_size=self._queue_size)
